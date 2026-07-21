@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zygisk Device Spoof</title>
+<style>
+:root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #238636;
+    --danger: #da3633;
+    --input-bg: #0d1117;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    padding: 16px; max-width: 800px; margin: 0 auto;
+}
+h1 { font-size: 20px; margin-bottom: 16px; color: var(--accent); }
+h2 { font-size: 16px; margin: 16px 0 8px; color: var(--text); }
+h3 { font-size: 14px; margin: 12px 0 6px; color: var(--text2); }
+.card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 16px; margin-bottom: 12px;
+}
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+.col { flex:1; min-width:200px; }
+label { display:block; font-size:12px; color:var(--text2); margin-bottom:4px; }
+input, select, textarea {
+    width:100%; background:var(--input-bg); border:1px solid var(--border);
+    color:var(--text); border-radius:4px; padding:8px; font-size:13px;
+}
+input:focus, select:focus { border-color: var(--accent); outline:none; }
+.btn {
+    background: var(--border); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 16px; cursor: pointer; font-size: 13px;
+    white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); }
+.btn-accent { background: var(--accent2); color: #fff; border-color: var(--accent2); }
+.btn-accent:hover { background: #2ea043; }
+.btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-sm { padding: 4px 8px; font-size: 11px; }
+.tabs { display:flex; gap:4px; margin-bottom:16px; flex-wrap:wrap; }
+.tab {
+    padding: 6px 14px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text2); border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.status { font-size:11px; color:var(--text2); margin-left:auto; }
+.success { color: #3fb950; }
+.error { color: var(--danger); }
+.toggle {
+    position:relative; width:40px; height:22px; display:inline-block;
+}
+.toggle input { opacity:0; width:0; height:0; }
+.slider {
+    position:absolute; inset:0; background:var(--border); border-radius:22px;
+    cursor:pointer; transition:.3s;
+}
+.slider:before {
+    content:''; position:absolute; height:16px; width:16px; left:3px; bottom:3px;
+    background:white; border-radius:50%; transition:.3s;
+}
+input:checked + .slider { background: var(--accent2); }
+input:checked + .slider:before { transform:translateX(18px); }
+.preset-grid {
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+    gap:8px; margin-top:8px;
+}
+.preset-item {
+    border:1px solid var(--border); border-radius:4px; padding:10px;
+    cursor:pointer; background: var(--surface);
+}
+.preset-item:hover { border-color: var(--accent); }
+.preset-item.selected { border-color: var(--accent); background: rgba(88,166,255,0.1); }
+.preset-item .name { font-weight:600; font-size:13px; }
+.preset-item .detail { font-size:11px; color:var(--text2); }
+.app-list { margin-top:8px; }
+.app-item {
+    display:flex; align-items:center; gap:8px; padding:8px;
+    border:1px solid var(--border); border-radius:4px; margin-bottom:6px;
+    background: var(--surface);
+}
+.app-item .pkg { flex:1; font-size:13px; font-family:monospace; }
+textarea { font-family:monospace; font-size:12px; min-height:200px; }
+</style>
+</head>
+<body>
+<h1>🛡️ Zygisk Device Spoof</h1>
+
+<div class="tabs" id="tabs">
+    <button class="tab active" onclick="showTab('apps')">📱 Apps</button>
+    <button class="tab" onclick="showTab('presets')">📦 Presets</button>
+    <button class="tab" onclick="showTab('device')">🖥️ Device</button>
+    <button class="tab" onclick="showTab('telephony')">📞 SIM</button>
+    <button class="tab" onclick="showTab('country')">🌍 Country</button>
+    <button class="tab" onclick="showTab('network')">🌐 Network</button>
+    <button class="tab" onclick="showTab('advanced')">⚙️ Advanced</button>
+    <span class="status" id="status">Ready</span>
+</div>
+
+<div id="content"></div>
+
+<script>
+const CONFIG_PATH = '/data/adb/modules/zygisk_device_spoof/config/config.json';
+const WEBROOT = '/data/adb/modules/zygisk_device_spoof/webroot';
+let currentConfig = { apps: [] };
+let currentAppIdx = -1;
+let currentTab = 'apps';
+
+// --- API Helpers ---
+function setStatus(msg, ok) {
+    document.getElementById('status').innerHTML = msg;
+    document.getElementById('status').className = 'status ' + (ok ? 'success' : 'error');
+}
+
+async function loadConfig() {
+    try {
+        const r = await fetch(`${WEBROOT}/config.json`);
+        currentConfig = await r.json();
+        if (!currentConfig.apps) currentConfig.apps = [];
+    } catch(e) {
+        currentConfig = { apps: [] };
+    }
+}
+
+async function saveConfig() {
+    try {
+        await fetch(`${WEBROOT}/config.json`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(currentConfig, null, 2)
+        });
+        // Also write via action.sh
+        setStatus('Config saved ✓', true);
+        setTimeout(() => setStatus('Ready'), 2000);
+    } catch(e) {
+        setStatus('Save failed: ' + e.message, false);
+    }
+}
+
+function getApp(idx) {
+    if (idx < 0 || idx >= currentConfig.apps.length) return null;
+    return currentConfig.apps[idx];
+}
+
+function ensureApp() {
+    if (currentAppIdx < 0) {
+        currentConfig.apps.push({
+            package: "",
+            country: "us",
+            enabled: true,
+            properties: {},
+            telephony: {},
+            identifiers: {},
+            network: {},
+            location: {},
+            display: {}
+        });
+        currentAppIdx = currentConfig.apps.length - 1;
+    }
+    return getApp(currentAppIdx);
+}
+
+function ensureSection(app, section) {
+    if (!app[section]) app[section] = {};
+    return app[section];
+}
+
+// --- UI Rendering ---
+function el(type, attrs, ...children) {
+    const e = document.createElement(type);
+    if (attrs) Object.entries(attrs).forEach(([k,v]) => { if (v!==undefined) e[k] = v; });
+    children.forEach(c => { if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+    return e;
+}
+
+function fieldRow(label, key, section, type='text', placeholder='') {
+    const app = getApp(currentAppIdx);
+    if (!app) return document.createElement('div');
+    const sec = section ? ensureSection(app, section) : app;
+    const val = (sec[key] !== undefined && sec[key] !== null) ? sec[key] : '';
+    const inp = el('input', { type, value: val, placeholder });
+    inp.onchange = () => { sec[key] = type === 'number' ? Number(inp.value) : inp.value; };
+    return el('div', {className:'row'},
+        el('div', {className:'col'},
+            el('label', {}, label),
+            inp
+        )
+    );
+}
+
+function fieldRowWithRandom(label, key, section, genFn) {
+    const app = getApp(currentAppIdx);
+    if (!app) return document.createElement('div');
+    const sec = section ? ensureSection(app, section) : app;
+    const val = (sec[key] !== undefined && sec[key] !== null) ? sec[key] : '';
+    const inp = el('input', { type:'text', value:val, placeholder:'Auto' });
+    inp.onchange = () => { sec[key] = inp.value; };
+    const genBtn = el('button', {className:'btn btn-sm', onclick:()=>{
+        inp.value = genFn();
+        sec[key] = inp.value;
+    }}, '🎲');
+    return el('div', {className:'row'},
+        el('div', {className:'col'},
+            el('label', {}, label),
+            inp
+        ),
+        genBtn
+    );
+}
+
+// --- Random Generators ---
+function randHex(len) {
+    return Array.from({length:len}, ()=>'0123456789abcdef'[Math.floor(Math.random()*16)]).join('');
+}
+function randDigits(len) {
+    return Array.from({length:len}, ()=>Math.floor(Math.random()*10)).join('');
+}
+function randIP() {
+    return `${Math.floor(Math.random()*223)+1}.${Math.floor(Math.random()*256)}.${Math.floor(Math.random()*256)}.${Math.floor(Math.random()*254)+1}`;
+}
+
+// --- Tab: Apps ---
+function renderApps() {
+    const c = document.getElementById('content');
+    c.innerHTML = '';
+
+    // New app
+    c.appendChild(el('div', {className:'row'},
+        el('input', {id:'newPackage', type:'text', placeholder:'com.example.app'}),
+        el('button', {className:'btn btn-accent', onclick:()=>{
+            const pkg = document.getElementById('newPackage').value.trim();
+            if (!pkg) return;
+            currentConfig.apps.push({
+                package: pkg, enabled: true,
+                properties: {}, telephony: {}, identifiers: {},
+                network: {}, location: {}, display: {}
+            });
+            currentAppIdx = currentConfig.apps.length - 1;
+            renderApps(); saveConfig();
+        }}, '+ Add App')
+    ));
+
+    // App list
+    const list = el('div', {className:'app-list'});
+    currentConfig.apps.forEach((app, i) => {
+        const item = el('div', {className:'app-item'});
+        if (i === currentAppIdx) item.style.borderColor = 'var(--accent)';
+        item.appendChild(el('span', {className:'pkg'}, app.package));
+        
+        const enToggle = el('label', {className:'toggle'},
+            el('input', {type:'checkbox', checked:app.enabled!==false, onchange:()=>{
+                app.enabled = app.enabled === undefined ? false : !app.enabled;
+                saveConfig();
+            }}),
+            el('span', {className:'slider'})
+        );
+        item.appendChild(enToggle);
+        
+        item.appendChild(el('button', {className:'btn btn-sm', onclick:()=>{
+            currentAppIdx = i; renderApps(); showTab('device');
+        }}, 'Edit'));
+        
+        item.appendChild(el('button', {className:'btn btn-sm btn-danger', onclick:()=>{
+            currentConfig.apps.splice(i, 1);
+            if (currentAppIdx >= currentConfig.apps.length) currentAppIdx = currentConfig.apps.length - 1;
+            if (currentAppIdx < 0) currentAppIdx = -1;
+            renderApps(); saveConfig();
+        }}, '✕'));
+        
+        list.appendChild(item);
+    });
+    c.appendChild(list);
+}
+
+// --- Tab: Presets (with country grid) ---
+const COUNTRY_PRESETS = [
+    {iso:'us',name:'🇺🇸 United States',mcc:311,mnc:480,tz:'America/Chicago',detail:'MCC:311 MNC:480'},
+    {iso:'gb',name:'🇬🇧 United Kingdom',mcc:234,mnc:30,tz:'Europe/London',detail:'MCC:234 MNC:30'},
+    {iso:'de',name:'🇩🇪 Germany',mcc:262,mnc:2,tz:'Europe/Berlin',detail:'MCC:262 MNC:2'},
+    {iso:'ca',name:'🇨🇦 Canada',mcc:302,mnc:720,tz:'America/Toronto',detail:'MCC:302 MNC:720'},
+    {iso:'ch',name:'🇨🇭 Switzerland',mcc:228,mnc:1,tz:'Europe/Zurich',detail:'MCC:228 MNC:1'},
+    {iso:'kr',name:'🇰🇷 South Korea',mcc:450,mnc:5,tz:'Asia/Seoul',detail:'MCC:450 MNC:5'},
+    {iso:'jp',name:'🇯🇵 Japan',mcc:440,mnc:10,tz:'Asia/Tokyo',detail:'MCC:440 MNC:10'},
+    {iso:'fr',name:'🇫🇷 France',mcc:208,mnc:1,tz:'Europe/Paris',detail:'MCC:208 MNC:1'},
+    {iso:'au',name:'🇦🇺 Australia',mcc:505,mnc:1,tz:'Australia/Sydney',detail:'MCC:505 MNC:1'},
+    {iso:'br',name:'🇧🇷 Brazil',mcc:724,mnc:5,tz:'America/Sao_Paulo',detail:'MCC:724 MNC:5'},
+    {iso:'in',name:'🇮🇳 India',mcc:405,mnc:45,tz:'Asia/Kolkata',detail:'MCC:405 MNC:45'},
+    {iso:'ru',name:'🇷🇺 Russia',mcc:250,mnc:1,tz:'Europe/Moscow',detail:'MCC:250 MNC:1'},
+    {iso:'it',name:'🇮🇹 Italy',mcc:222,mnc:1,tz:'Europe/Rome',detail:'MCC:222 MNC:1'},
+    {iso:'es',name:'🇪🇸 Spain',mcc:214,mnc:1,tz:'Europe/Madrid',detail:'MCC:214 MNC:1'},
+    {iso:'nl',name:'🇳🇱 Netherlands',mcc:204,mnc:4,tz:'Europe/Amsterdam',detail:'MCC:204 MNC:4'},
+    {iso:'se',name:'🇸🇪 Sweden',mcc:240,mnc:1,tz:'Europe/Stockholm',detail:'MCC:240 MNC:1'},
+    {iso:'no',name:'🇳🇴 Norway',mcc:242,mnc:1,tz:'Europe/Oslo',detail:'MCC:242 MNC:1'},
+    {iso:'dk',name:'🇩🇰 Denmark',mcc:238,mnc:1,tz:'Europe/Copenhagen',detail:'MCC:238 MNC:1'},
+    {iso:'fi',name:'🇫🇮 Finland',mcc:244,mnc:5,tz:'Europe/Helsinki',detail:'MCC:244 MNC:5'},
+    {iso:'pl',name:'🇵🇱 Poland',mcc:260,mnc:1,tz:'Europe/Warsaw',detail:'MCC:260 MNC:1'},
+    {iso:'tr',name:'🇹🇷 Turkey',mcc:286,mnc:1,tz:'Europe/Istanbul',detail:'MCC:286 MNC:1'},
+    {iso:'sa',name:'🇸🇦 Saudi Arabia',mcc:420,mnc:1,tz:'Asia/Riyadh',detail:'MCC:420 MNC:1'},
+    {iso:'ae',name:'🇦🇪 UAE',mcc:424,mnc:2,tz:'Asia/Dubai',detail:'MCC:424 MNC:2'},
+    {iso:'sg',name:'🇸🇬 Singapore',mcc:525,mnc:1,tz:'Asia/Singapore',detail:'MCC:525 MNC:1'},
+    {iso:'mx',name:'🇲🇽 Mexico',mcc:334,mnc:20,tz:'America/Mexico_City',detail:'MCC:334 MNC:20'},
+];
+
+function renderPresets() {
+    const c = document.getElementById('content');
+    c.innerHTML = '';
+
+    const app = ensureApp();
+    if (!app) return;
+    const currentCountry = app.country || 'us';
+
+    const h2 = el('h2', {}, '🌍 Select Country');
+    c.appendChild(h2);
+
+    const grid = el('div', {className:'preset-grid'});
+    COUNTRY_PRESETS.forEach(cp => {
+        const item = el('div', {className:'preset-item' + (cp.iso === currentCountry ? ' selected':'')});
+        item.innerHTML = `<div class="name">${cp.name}</div><div class="detail">${cp.detail} | ${cp.tz}</div>`;
+        item.onclick = () => {
+            app.country = cp.iso;
+            ensureSection(app, 'telephony').mcc = cp.mcc;
+            ensureSection(app, 'telephony').mnc = cp.mnc;
+            ensureSection(app, 'telephony').operatorNumeric = `${cp.mcc}${String(cp.mnc).padStart(3,'0')}`;
+            ensureSection(app, 'telephony').iccOperatorNumeric = `${cp.mcc}${String(cp.mnc).padStart(3,'0')}`;
+            app.defaultTimezone = cp.tz;
+            saveConfig();
+            renderPresets();
+        };
+        grid.appendChild(item);
+    });
+    c.appendChild(grid);
+}
+
+// --- Tab: Device ---
+function renderDevice() {
+    const c = document.getElementById('content');
+    const app = ensureApp();
+    if (!app) return;
+    c.innerHTML = '';
+
+    c.appendChild(el('h2', {}, '📱 Device Identity'));
+    c.appendChild(fieldRow('Brand', 'brand', 'properties'));
+    c.appendChild(fieldRow('Model', 'model', 'properties'));
+    c.appendChild(fieldRow('Manufacturer', 'manufacturer', 'properties'));
+    c.appendChild(fieldRow('Device Code', 'deviceCode', 'properties'));
+    c.appendChild(fieldRow('Product Name', 'productName', 'properties'));
+    c.appendChild(fieldRow('Board', 'board', 'properties'));
+    c.appendChild(fieldRow('Hardware', 'hardware', 'properties'));
+    c.appendChild(fieldRow('Build Fingerprint', 'buildFingerprint', 'properties'));
+    c.appendChild(fieldRow('Security Patch', 'securityPatch', 'properties'));
+    c.appendChild(fieldRow('Build ID', 'buildId', 'properties'));
+    c.appendChild(fieldRow('Bootloader', 'bootloader', 'properties'));
+    c.appendChild(fieldRowWithRandom('Baseband', 'baseband', 'properties', ()=>randDigits(20)));
+    c.appendChild(fieldRow('Build Host', 'buildHost', 'properties'));
+    c.appendChild(fieldRow('Build User', 'buildUser', 'properties'));
+    c.appendChild(fieldRow('Build Tags', 'buildTags', 'properties'));
+    
+    c.appendChild(el('h2', {}, '🖥️ SoC'));
+    c.appendChild(fieldRow('SoC Manufacturer', 'socManufacturer', 'properties'));
+    c.appendChild(fieldRowWithRandom('SoC Model', 'socModel', 'properties', ()=>'Qualcomm Snapdragon '+(Math.floor(Math.random()*3)+8)+' Gen '+(Math.floor(Math.random()*3)+1)));
+    
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
+        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
+    )));
+}
+
+// --- Tab: Telephony ---
+function renderTelephony() {
+    const c = document.getElementById('content');
+    const app = ensureApp();
+    if (!app) return;
+    c.innerHTML = '';
+
+    c.appendChild(el('h2', {}, '📞 SIM / Telephony'));
+    c.appendChild(fieldRow('ICC Operator ISO Country', 'iccOperatorIsoCountry', 'telephony'));
+    c.appendChild(fieldRow('ICC Operator Numeric', 'iccOperatorNumeric', 'telephony'));
+    c.appendChild(fieldRow('Operator ISO Country', 'operatorIsoCountry', 'telephony'));
+    c.appendChild(fieldRow('Operator Numeric', 'operatorNumeric', 'telephony'));
+    c.appendChild(fieldRowWithRandom('SIM Serial', 'simSerial', 'telephony', ()=>randDigits(20)));
+    c.appendChild(fieldRowWithRandom('ICC ID', 'iccId', 'telephony', ()=>randDigits(20)));
+    c.appendChild(fieldRow('Carrier Name', 'carrierName', 'telephony'));
+    c.appendChild(fieldRow('MCC', 'mcc', 'telephony', 'number'));
+    c.appendChild(fieldRow('MNC', 'mnc', 'telephony', 'number'));
+    
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
+        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
+    )));
+}
+
+// --- Tab: Country ---
+function renderCountry() {
+    const c = document.getElementById('content');
+    const app = ensureApp();
+    if (!app) return;
+    c.innerHTML = '';
+
+    c.appendChild(el('h2', {}, '🌍 Country / Location'));
+    c.appendChild(fieldRow('Country ISO', 'countryIso', 'telephony'));
+    c.appendChild(fieldRow('Country Code', 'countryCode', 'telephony'));
+    c.appendChild(fieldRow('Default Timezone', 'defaultTimezone', undefined));
+    c.appendChild(fieldRow('Latitude', 'latitude', 'location', 'number'));
+    c.appendChild(fieldRow('Longitude', 'longitude', 'location', 'number'));
+    
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
+        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
+    )));
+}
+
+// --- Tab: Network ---
+function renderNetwork() {
+    const c = document.getElementById('content');
+    const app = ensureApp();
+    if (!app) return;
+    c.innerHTML = '';
+
+    c.appendChild(el('h2', {}, '🌐 Network'));
+    c.appendChild(fieldRowWithRandom('IP Address', 'ipAddress', 'network', randIP));
+    c.appendChild(fieldRowWithRandom('WiFi SSID', 'wifiSsid', 'network', ()=>'WiFi_' + randHex(6)));
+    
+    c.appendChild(el('h2', {}, '🆔 Identifiers'));
+    c.appendChild(fieldRowWithRandom('Android ID', 'androidId', 'identifiers', ()=>randHex(16)));
+    c.appendChild(fieldRowWithRandom('GSF ID', 'gsfId', 'identifiers', ()=>randHex(16)));
+    c.appendChild(fieldRowWithRandom('App Set ID', 'appSetId', 'identifiers', ()=>randHex(8)));
+    c.appendChild(fieldRowWithRandom('MediaDrm ID', 'mediaDrmId', 'identifiers', ()=>randHex(32)));
+    
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
+        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
+    )));
+}
+
+// --- Tab: Advanced ---
+function renderAdvanced() {
+    const c = document.getElementById('content');
+    const app = ensureApp();
+    if (!app) return;
+    c.innerHTML = '';
+
+    c.appendChild(el('h2', {}, '⚙️ Advanced Settings'));
+    c.appendChild(fieldRow('RAM (GB)', 'ramGb', 'display', 'number'));
+    c.appendChild(fieldRow('User Agent', 'userAgent', 'display'));
+    
+    c.appendChild(el('h2', {}, '📄 Raw Config'));
+    const ta = el('textarea', {});
+    ta.value = JSON.stringify(currentConfig, null, 2);
+    c.appendChild(ta);
+    
+    c.appendChild(el('div', {className:'row', style:'margin-top:8px'},
+        el('button', {className:'btn btn-accent', onclick:()=>{
+            try {
+                currentConfig = JSON.parse(ta.value);
+                saveConfig();
+            } catch(e) { setStatus('Invalid JSON: '+e.message, false); }
+        }}, '💾 Save & Apply'),
+        el('button', {className:'btn', onclick:()=>{
+            ta.value = JSON.stringify(currentConfig, null, 2);
+        }}, '↺ Refresh')
+    ));
+}
+
+// --- Tab Router ---
+function showTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => {
+        if (t.textContent.toLowerCase().includes(tab.toLowerCase()) || 
+            t.textContent.includes({apps:'📱',presets:'📦',device:'🖥️',telephony:'📞',country:'🌍',network:'🌐',advanced:'⚙️'}[tab] || '')) {
+            t.classList.add('active');
+        }
+    });
+    switch(tab) {
+        case 'apps': renderApps(); break;
+        case 'presets': renderPresets(); break;
+        case 'device': renderDevice(); break;
+        case 'telephony': renderTelephony(); break;
+        case 'country': renderCountry(); break;
+        case 'network': renderNetwork(); break;
+        case 'advanced': renderAdvanced(); break;
+    }
+}
+
+// --- Init ---
+showTab('apps');
+</script>
+</body>
+</html>
