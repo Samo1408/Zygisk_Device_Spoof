@@ -1,6 +1,6 @@
-id=zygisk_device_spoof
-name=Zygisk Device Spoof
-version=v2.0.0
-versionCode=200
+id=${moduleId}
+name=${moduleName}
+version=${versionName}
+versionCode=${versionCode}
 author=Samo1408
-description=Advanced device, SIM, telephony & location spoofing for Android. Fork with WebUI for KernelSU/Magisk.
+description=Advanced device, SIM, telephony & location spoofing. Fork with WebUI for KernelSU/Magisk/KSU.
