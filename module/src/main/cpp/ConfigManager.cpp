@@ -74,25 +74,6 @@ static double safe_double(simdjson::dom::element& el, const char* key) {
     return 0.0;
 }
 
-// --- Overloads for simdjson::dom::object ---
-static std::string safe_str(simdjson::dom::object& obj, const char* key) {
-    std::string_view val;
-    if (obj[key].get_string().get(val) == simdjson::SUCCESS) return std::string(val);
-    return "";
-}
-
-static int safe_int(simdjson::dom::object& obj, const char* key) {
-    int64_t val;
-    if (obj[key].get_int64().get(val) == simdjson::SUCCESS) return (int)val;
-    return -1;
-}
-
-static double safe_double(simdjson::dom::object& obj, const char* key) {
-    double val;
-    if (obj[key].get_double().get(val) == simdjson::SUCCESS) return val;
-    return 0.0;
-}
-
 // --- Country Presets ---
 const std::vector<CountryPreset>& ConfigManager::getCountryPresets() {
     return s_country_presets;
@@ -170,7 +151,6 @@ void ConfigManager::parseConfig(simdjson::dom::element& doc) {
                 }
                 cfg.countryIso = preset->iso;
                 cfg.defaultTimezone = preset->timezone;
-                // Random location within country bounds
                 if (cfg.latitude == 0.0 && cfg.longitude == 0.0) {
                     cfg.latitude = preset->lat_min + (rand() / (double)RAND_MAX) * (preset->lat_max - preset->lat_min);
                     cfg.longitude = preset->lon_min + (rand() / (double)RAND_MAX) * (preset->lon_max - preset->lon_min);
@@ -184,14 +164,28 @@ void ConfigManager::parseConfig(simdjson::dom::element& doc) {
 }
 
 void ConfigManager::parseAppConfig(simdjson::dom::element& app, AppSpoofConfig& cfg) {
-    // Top-level fields
     cfg.enabled = true;
     bool en = false;
     if (app["enabled"].get_bool().get(en) == simdjson::SUCCESS) cfg.enabled = en;
 
-    // Profile object
-    simdjson::dom::object props;
-    if (app["properties"].get_object().get(props) == simdjson::SUCCESS) {
+    auto obj_str = [](simdjson::dom::element& parent, const char* section, const char* key) -> std::string {
+        simdjson::dom::element sec;
+        if (parent[section].get(sec) != simdjson::SUCCESS) return "";
+        return safe_str(sec, key);
+    };
+    auto obj_int = [](simdjson::dom::element& parent, const char* section, const char* key) -> int {
+        simdjson::dom::element sec;
+        if (parent[section].get(sec) != simdjson::SUCCESS) return -1;
+        return safe_int(sec, key);
+    };
+    auto obj_dbl = [](simdjson::dom::element& parent, const char* section, const char* key) -> double {
+        simdjson::dom::element sec;
+        if (parent[section].get(sec) != simdjson::SUCCESS) return 0.0;
+        return safe_double(sec, key);
+    };
+
+    simdjson::dom::element props;
+    if (app["properties"].get(props) == simdjson::SUCCESS) {
         cfg.brand = safe_str(props, "brand");
         cfg.model = safe_str(props, "model");
         cfg.manufacturer = safe_str(props, "manufacturer");
@@ -212,59 +206,37 @@ void ConfigManager::parseAppConfig(simdjson::dom::element& app, AppSpoofConfig& 
         cfg.buildHost = safe_str(props, "buildHost");
         cfg.buildUser = safe_str(props, "buildUser");
         cfg.buildTags = safe_str(props, "buildTags");
-        
         cfg.socModel = safe_str(props, "socModel");
         cfg.socManufacturer = safe_str(props, "socManufacturer");
     }
 
-    // Telephony section
-    simdjson::dom::object tele;
-    if (app["telephony"].get_object().get(tele) == simdjson::SUCCESS) {
-        cfg.iccOperatorIsoCountry = safe_str(tele, "iccOperatorIsoCountry");
-        cfg.iccOperatorNumeric = safe_str(tele, "iccOperatorNumeric");
-        cfg.operatorIsoCountry = safe_str(tele, "operatorIsoCountry");
-        cfg.operatorNumeric = safe_str(tele, "operatorNumeric");
-        cfg.simSerial = safe_str(tele, "simSerial");
-        cfg.iccId = safe_str(tele, "iccId");
-        cfg.subscriberId = safe_str(tele, "subscriberId");
-        cfg.carrierId = safe_int(tele, "carrierId");
-        cfg.carrierName = safe_str(tele, "carrierName");
-        cfg.mcc = safe_int(tele, "mcc");
-        cfg.mnc = safe_int(tele, "mnc");
-    }
+    cfg.iccOperatorIsoCountry = obj_str(app, "telephony", "iccOperatorIsoCountry");
+    cfg.iccOperatorNumeric = obj_str(app, "telephony", "iccOperatorNumeric");
+    cfg.operatorIsoCountry = obj_str(app, "telephony", "operatorIsoCountry");
+    cfg.operatorNumeric = obj_str(app, "telephony", "operatorNumeric");
+    cfg.simSerial = obj_str(app, "telephony", "simSerial");
+    cfg.iccId = obj_str(app, "telephony", "iccId");
+    cfg.subscriberId = obj_str(app, "telephony", "subscriberId");
+    cfg.carrierId = obj_int(app, "telephony", "carrierId");
+    cfg.carrierName = obj_str(app, "telephony", "carrierName");
+    cfg.mcc = obj_int(app, "telephony", "mcc");
+    cfg.mnc = obj_int(app, "telephony", "mnc");
 
-    // Identifiers section
-    simdjson::dom::object ids;
-    if (app["identifiers"].get_object().get(ids) == simdjson::SUCCESS) {
-        cfg.androidId = safe_str(ids, "androidId");
-        cfg.gsfId = safe_str(ids, "gsfId");
-        cfg.appSetId = safe_str(ids, "appSetId");
-        cfg.mediaDrmId = safe_str(ids, "mediaDrmId");
-    }
+    cfg.androidId = obj_str(app, "identifiers", "androidId");
+    cfg.gsfId = obj_str(app, "identifiers", "gsfId");
+    cfg.appSetId = obj_str(app, "identifiers", "appSetId");
+    cfg.mediaDrmId = obj_str(app, "identifiers", "mediaDrmId");
 
-    // Network section
-    simdjson::dom::object net;
-    if (app["network"].get_object().get(net) == simdjson::SUCCESS) {
-        cfg.ipAddress = safe_str(net, "ipAddress");
-        cfg.wifiSsid = safe_str(net, "wifiSsid");
-    }
+    cfg.ipAddress = obj_str(app, "network", "ipAddress");
+    cfg.wifiSsid = obj_str(app, "network", "wifiSsid");
 
-    // Location section
-    simdjson::dom::object loc;
-    if (app["location"].get_object().get(loc) == simdjson::SUCCESS) {
-        cfg.latitude = safe_double(loc, "latitude");
-        cfg.longitude = safe_double(loc, "longitude");
-    }
+    cfg.latitude = obj_dbl(app, "location", "latitude");
+    cfg.longitude = obj_dbl(app, "location", "longitude");
 
-    // Display section
-    simdjson::dom::object disp;
-    if (app["display"].get_object().get(disp) == simdjson::SUCCESS) {
-        cfg.userAgent = safe_str(disp, "userAgent");
-        cfg.ramGb = safe_int(disp, "ramGb");
-        if (cfg.ramGb <= 0) cfg.ramGb = 12;
-    }
+    cfg.userAgent = obj_str(app, "display", "userAgent");
+    cfg.ramGb = obj_int(app, "display", "ramGb");
+    if (cfg.ramGb <= 0) cfg.ramGb = 12;
 
-    // Country override from top-level
     std::string country = safe_str(app, "defaultTimezone");
     if (!country.empty()) cfg.defaultTimezone = country;
 }
