@@ -74,6 +74,25 @@ static double safe_double(simdjson::dom::element& el, const char* key) {
     return 0.0;
 }
 
+// --- Overloads for simdjson::dom::object ---
+static std::string safe_str(simdjson::dom::object& obj, const char* key) {
+    std::string_view val;
+    if (obj[key].get_string().get(val) == simdjson::SUCCESS) return std::string(val);
+    return "";
+}
+
+static int safe_int(simdjson::dom::object& obj, const char* key) {
+    int64_t val;
+    if (obj[key].get_int64().get(val) == simdjson::SUCCESS) return (int)val;
+    return -1;
+}
+
+static double safe_double(simdjson::dom::object& obj, const char* key) {
+    double val;
+    if (obj[key].get_double().get(val) == simdjson::SUCCESS) return val;
+    return 0.0;
+}
+
 // --- Country Presets ---
 const std::vector<CountryPreset>& ConfigManager::getCountryPresets() {
     return s_country_presets;
