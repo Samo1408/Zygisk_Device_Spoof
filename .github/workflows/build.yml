@@ -50,22 +50,15 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Build Release ZIP
+      - name: Build ZIP
         run: ./gradlew :module:zipRelease
 
-      - name: Build Debug ZIP
-        run: ./gradlew :module:zipDebug
+      - name: List built files
+        run: ls -la module/release/
 
-      - name: Upload Release ZIP
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: zygisk_device_spoof_release_${{ github.ref_name }}
-          path: module/release/zygisk_device_spoof_release.zip
-          if-no-files-found: warn
-
-      - name: Upload Debug ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: zygisk_device_spoof_debug_${{ github.ref_name }}
-          path: module/release/zygisk_device_spoof_debug.zip
-          if-no-files-found: warn
+          name: zygisk_device_spoof-${{ github.ref_name }}
+          path: module/release/*.zip
+          if-no-files-found: error
