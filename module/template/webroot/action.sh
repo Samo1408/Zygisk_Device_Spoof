@@ -1,22 +1,19 @@
 #!/system/bin/sh
-MODDIR=/bin
-MODID=zygisk_device_spoof
-CONFIG_DIR="/data/adb/modules//config"
-CONFIG_FILE="/config.json"
-mkdir -p "" 2>/dev/null
-if [ ! -f "" ]; then
-    echo "{"apps":[]}" > ""
-    chmod 644 ""
+CONFIG_FILE="/data/adb/modules/zygisk_device_spoof/config/config.json"
+mkdir -p "/data/adb/modules/zygisk_device_spoof/config" 2>/dev/null
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo '{"apps":[]}' > "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
 fi
 if [ "$REQUEST_METHOD" = "POST" ]; then
     BODY=$(cat)
     if echo "$BODY" | grep -q "{"; then
-        echo "$BODY" > ""
-        chmod 644 ""
-        echo "{"status":"ok"}"
+        echo "$BODY" > "$CONFIG_FILE"
+        chmod 644 "$CONFIG_FILE"
+        echo '{"status":"ok"}'
     else
-        echo "{"status":"error"}"
+        echo '{"status":"error"}'
     fi
 else
-    cat ""
+    cat "$CONFIG_FILE"
 fi
