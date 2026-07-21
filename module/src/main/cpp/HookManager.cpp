@@ -26,7 +26,6 @@
 
 // --- Static Member Initialization ---
 int (*HookManager::original_system_property_get)(const char*, char*) = nullptr;
-int (*HookManager::original_system_property_read)(const prop_info*, void (*)(void*, const char*, const char*, uint32_t), void*) = nullptr;
 thread_local AppSpoofConfig HookManager::tls_config;
 thread_local bool HookManager::tls_has_config = false;
 thread_local std::unordered_map<std::string, std::string> thread_local_spoof_properties;
@@ -123,12 +122,6 @@ void HookManager::ensure_libc_info() {
 // --- HookManager ---
 HookManager::HookManager(zygisk::Api* api) : api(api) {
     memset(&buildFields, 0, sizeof(buildFields));
-}
-
-HookManager::~HookManager() {
-    if (buildClass) api->env()->DeleteLocalRef(buildClass);
-    if (telephonyManagerClass) api->env()->DeleteLocalRef(telephonyManagerClass);
-    if (subscriptionInfoClass) api->env()->DeleteLocalRef(subscriptionInfoClass);
 }
 
 void HookManager::applyHooks(JNIEnv* env, const AppSpoofConfig& cfg) {
@@ -270,8 +263,8 @@ int HookManager::hooked_system_property_get(const char* name, char* value) {
     // Special handling for telephony properties from tls_config
     auto& cfg = tls_config;
     
-    #define SPOOF_PROP(name, val) \
-        if (strcmp(#name, name) == 0 && !(val).empty()) { \
+    #define SPOOF_PROP(prop_name, val) \
+        if (strcmp(prop_name, name) == 0 && !(val).empty()) { \
             strncpy(value, (val).c_str(), PROPERTY_VALUE_MAX - 1); \
             value[PROPERTY_VALUE_MAX - 1] = '\0'; \
             in_hook = false; \
@@ -282,7 +275,7 @@ int HookManager::hooked_system_property_get(const char* name, char* value) {
     SPOOF_PROP("gsm.sim.operator.numeric", cfg.iccOperatorNumeric);
     SPOOF_PROP("gsm.operator.iso-country", cfg.operatorIsoCountry);
     SPOOF_PROP("gsm.operator.numeric", cfg.operatorNumeric);
-    SPOOF_PROP("gsm.operator.isroaming", "false");
+    SPOOF_PROP("gsm.operator.isroaming", std::string("false"));
     
     #undef SPOOF_PROP
 
