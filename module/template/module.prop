@@ -1,7 +1,6 @@
-id=${moduleId}
-name=${moduleName}
-version=${versionName}
-versionCode=${versionCode}
-author=GitHub@Qjj7679
-description=A module used to spoof device info.
-#updateJson=
+id=zygisk_device_spoof
+name=Zygisk Device Spoof
+version=v2.0.0
+versionCode=200
+author=Samo1408
+description=Advanced device, SIM, telephony & location spoofing for Android. Fork with WebUI for KernelSU/Magisk.
