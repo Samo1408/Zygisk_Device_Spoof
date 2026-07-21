@@ -57,7 +57,7 @@ input:focus, select:focus { border-color: var(--accent); outline:none; }
 .success { color: #3fb950; }
 .error { color: var(--danger); }
 .toggle {
-    position:relative; width:40px; height:22px; display:inline-block;
+    position:relative; width:40px; height:22px; display:inline-block; flex-shrink:0;
 }
 .toggle input { opacity:0; width:0; height:0; }
 .slider {
@@ -90,6 +90,33 @@ input:checked + .slider:before { transform:translateX(18px); }
 }
 .app-item .pkg { flex:1; font-size:13px; font-family:monospace; }
 textarea { font-family:monospace; font-size:12px; min-height:200px; }
+
+/* === Installed Apps Section === */
+.installed-section { margin-top:16px; border-top:1px solid var(--border); padding-top:12px; }
+.installed-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+.installed-search { flex:1; min-width:150px; }
+.installed-list {
+    max-height:400px; overflow-y:auto; border:1px solid var(--border);
+    border-radius:4px; margin-top:8px;
+}
+.installed-item {
+    display:flex; align-items:center; gap:8px; padding:6px 10px;
+    border-bottom:1px solid var(--border); transition:background .15s;
+}
+.installed-item:last-child { border-bottom:none; }
+.installed-item:hover { background: rgba(88,166,255,0.05); }
+.installed-item .ipkg { flex:1; font-size:12px; font-family:monospace; word-break:break-all; }
+.installed-item .ilabel { font-size:11px; color:var(--text2); max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.installed-item.configured { border-left: 3px solid var(--accent2); }
+.loading { text-align:center; padding:20px; color:var(--text2); }
+.loading::after { content:'...'; animation:dots 1.5s-steps(3,infinite); }
+@keyframes dots { 0%{content:'.'} 33%{content:'..'} 66%{content:'...'} }
+.badge {
+    font-size:9px; padding:2px 6px; border-radius:10px; background:var(--accent2);
+    color:#fff; white-space:nowrap;
+}
+.sys-toggle-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text2); }
+.count-info { font-size:11px; color:var(--text2); }
 </style>
 </head>
 <body>
@@ -114,6 +141,9 @@ const WEBROOT = '/data/adb/modules/zygisk_device_spoof/webroot';
 let currentConfig = { apps: [] };
 let currentAppIdx = -1;
 let currentTab = 'apps';
+let installedPackages = [];
+let showSystemApps = false;
+let installedLoading = false;
 
 // --- API Helpers ---
 function setStatus(msg, ok) {
@@ -138,8 +168,7 @@ async function saveConfig() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(currentConfig, null, 2)
         });
-        // Also write via action.sh
-        setStatus('Config saved ✓', true);
+        setStatus('Config saved ✓ ✓', true);
         setTimeout(() => setStatus('Ready'), 2000);
     } catch(e) {
         setStatus('Save failed: ' + e.message, false);
@@ -154,15 +183,9 @@ function getApp(idx) {
 function ensureApp() {
     if (currentAppIdx < 0) {
         currentConfig.apps.push({
-            package: "",
-            country: "us",
-            enabled: true,
-            properties: {},
-            telephony: {},
-            identifiers: {},
-            network: {},
-            location: {},
-            display: {}
+            package: "", country: "us", enabled: true,
+            properties: {}, telephony: {}, identifiers: {},
+            network: {}, location: {}, display: {}
         });
         currentAppIdx = currentConfig.apps.length - 1;
     }
@@ -174,10 +197,144 @@ function ensureSection(app, section) {
     return app[section];
 }
 
+// --- Installed Apps ---
+function isAppConfigured(pkg) {
+    return currentConfig.apps.some(a => a.package === pkg);
+}
+
+function findAppIdx(pkg) {
+    return currentConfig.apps.findIndex(a => a.package === pkg);
+}
+
+function addAppFromInstalled(pkg) {
+    if (isAppConfigured(pkg)) return;
+    currentConfig.apps.push({
+        package: pkg, country: "us", enabled: true,
+        properties: {}, telephony: {}, identifiers: {},
+        network: {}, location: {}, display: {}
+    });
+    saveConfig();
+}
+
+function removeAppFromInstalled(pkg) {
+    const idx = findAppIdx(pkg);
+    if (idx >= 0) {
+        currentConfig.apps.splice(idx, 1);
+        if (currentAppIdx >= currentConfig.apps.length) currentAppIdx = currentConfig.apps.length - 1;
+        if (currentAppIdx < 0) currentAppIdx = -1;
+        saveConfig();
+    }
+}
+
+function toggleAppFromInstalled(pkg, checked) {
+    if (checked) {
+        addAppFromInstalled(pkg);
+    } else {
+        removeAppFromInstalled(pkg);
+    }
+}
+
+async function fetchInstalledApps() {
+    if (installedLoading) return;
+    installedLoading = true;
+    setStatus('Loading installed apps...', true);
+    try {
+        const r = await fetch(`${WEBROOT}/packages`, { signal: AbortSignal.timeout(10000) });
+        if (r.ok) {
+            const txt = await r.text();
+            // Parse pm list packages output (one package per line: "package:com.example")
+            const pkgs = txt.split('\n')
+                .map(l => l.trim().replace(/^package:/, ''))
+                .filter(p => p.length > 0);
+            installedPackages = pkgs;
+            setStatus(`Found ${pkgs.length} packages`, true);
+        } else {
+            setStatus('Failed to load packages', false);
+        }
+    } catch(e) {
+        // Fallback: try loading via packages.sh
+        try {
+            const r2 = await fetch(`${WEBROOT}/packages.sh`, { signal: AbortSignal.timeout(10000) });
+            if (r2.ok) {
+                const txt = await r2.text();
+                const pkgs = txt.split('\n').map(l => l.trim().replace(/^package:/, '')).filter(p => p.length > 0);
+                installedPackages = pkgs;
+                setStatus(`Found ${pkgs.length} packages`, true);
+            }
+        } catch(e2) {
+            setStatus('Cannot list packages (root required)', false);
+        }
+    }
+    installedLoading = false;
+    refreshInstalledView();
+}
+
+function getFilteredPackages(filter = '') {
+    const q = filter.toLowerCase();
+    return installedPackages.filter(p => {
+        if (!showSystemApps) {
+            // Rough system detection
+            const isSys = p.startsWith('com.android.') || p.startsWith('com.google.android.') ||
+                p.startsWith('android') || p.includes('.overlay') || p.includes('.system');
+            if (isSys && !isAppConfigured(p)) return false;
+        }
+        if (q && !p.toLowerCase().includes(q)) return false;
+        return true;
+    });
+}
+
+function refreshInstalledView() {
+    const list = document.getElementById('installed-list');
+    const count = document.getElementById('installed-count');
+    if (!list) return;
+    
+    const searchInput = document.getElementById('installed-search');
+    const filter = searchInput ? searchInput.value : '';
+    const pkgs = getFilteredPackages(filter);
+    
+    list.innerHTML = '';
+    
+    if (installedPackages.length === 0 && !installedLoading) {
+        list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text2)">Click 🔄 Refresh to scan apps</div>';
+        return;
+    }
+    
+    if (installedLoading) {
+        list.innerHTML = '<div class="loading">Scanning installed apps</div>';
+        return;
+    }
+    
+    // Show configured apps first
+    const configured = pkgs.filter(p => isAppConfigured(p));
+    const rest = pkgs.filter(p => !isAppConfigured(p));
+    const sorted = [...configured, ...rest];
+    
+    sorted.forEach(pkg => {
+        const cfg = isAppConfigured(pkg);
+        const item = document.createElement('div');
+        item.className = 'installed-item' + (cfg ? ' configured' : '');
+        item.innerHTML = `
+            <span class="ipkg">${pkg}</span>
+            ${cfg ? '<span class="badge">configured</span>' : ''}
+            <label class="toggle">
+                <input type="checkbox" ${cfg ? 'checked' : ''} onchange="toggleAppFromInstalled('${pkg}', this.checked); this.parentElement.parentElement.classList.toggle('configured', this.checked);">
+                <span class="slider"></span>
+            </label>
+        `;
+        list.appendChild(item);
+    });
+    
+    if (count) count.textContent = `Showing ${sorted.length} of ${installedPackages.length}`;
+}
+
 // --- UI Rendering ---
 function el(type, attrs, ...children) {
     const e = document.createElement(type);
-    if (attrs) Object.entries(attrs).forEach(([k,v]) => { if (v!==undefined) e[k] = v; });
+    if (attrs) Object.entries(attrs).forEach(([k,v]) => { if (v!==undefined) {
+        if (k.startsWith('on')) e[k.toLowerCase()] = v;
+        else if (k === 'className') e.className = v;
+        else e.setAttribute(k, v);
+    }});
     children.forEach(c => { if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
     return e;
 }
@@ -233,23 +390,27 @@ function renderApps() {
     const c = document.getElementById('content');
     c.innerHTML = '';
 
-    // New app
+    // === Manual Add Section ===
+    c.appendChild(el('h2', {}, '☥ Add Manually'));
     c.appendChild(el('div', {className:'row'},
         el('input', {id:'newPackage', type:'text', placeholder:'com.example.app'}),
         el('button', {className:'btn btn-accent', onclick:()=>{
             const pkg = document.getElementById('newPackage').value.trim();
             if (!pkg) return;
+            if (isAppConfigured(pkg)) { setStatus('Already added!', false); return; }
             currentConfig.apps.push({
                 package: pkg, enabled: true,
                 properties: {}, telephony: {}, identifiers: {},
                 network: {}, location: {}, display: {}
             });
             currentAppIdx = currentConfig.apps.length - 1;
-            renderApps(); saveConfig();
+            saveConfig();
+            renderApps();
         }}, '+ Add App')
     ));
 
-    // App list
+    // === Configured Apps List ===
+    c.appendChild(el('h2', {}, '♙️ Configured Apps (' + currentConfig.apps.length + ')'));
     const list = el('div', {className:'app-list'});
     currentConfig.apps.forEach((app, i) => {
         const item = el('div', {className:'app-item'});
@@ -266,22 +427,56 @@ function renderApps() {
         item.appendChild(enToggle);
         
         item.appendChild(el('button', {className:'btn btn-sm', onclick:()=>{
-            currentAppIdx = i; renderApps(); showTab('device');
+            currentAppIdx = i; saveConfig(); showTab('device');
         }}, 'Edit'));
         
         item.appendChild(el('button', {className:'btn btn-sm btn-danger', onclick:()=>{
             currentConfig.apps.splice(i, 1);
             if (currentAppIdx >= currentConfig.apps.length) currentAppIdx = currentConfig.apps.length - 1;
             if (currentAppIdx < 0) currentAppIdx = -1;
-            renderApps(); saveConfig();
+            saveConfig();
+            renderApps();
         }}, '✕'));
         
         list.appendChild(item);
     });
     c.appendChild(list);
+
+    // === Installed Apps Section ===
+    c.appendChild(el('div', {className:'installed-section'}));
+    
+    const header = el('div', {className:'installed-header'});
+    header.appendChild(el('h2', {style:'margin:0'}, '📋 Installed Apps'));
+    header.appendChild(el('span', {id:'installed-count', className:'count-info'}, ''));
+    
+    // System apps toggle row
+    header.appendChild(el('label', {className:'sys-toggle-row'},
+        el('input', {type:'checkbox', id:'showSysCb', onchange:()=>{
+            showSystemApps = document.getElementById('showSysCb').checked;
+            refreshInstalledView();
+        }}),
+        'Show System'
+    ));
+    
+    // Search + Refresh
+    header.appendChild(el('input', {
+        id:'installed-search', className:'installed-search', 
+        type:'text', placeholder:'🔍 Filter packages...',
+        oninput:()=> refreshInstalledView()
+    }));
+    header.appendChild(el('button', {className:'btn btn-sm btn-accent', onclick:async()=>{
+        await fetchInstalledApps();
+        refreshInstalledView();
+    }}, '🔄 Refresh'));
+    
+    c.lastChild.appendChild(header);
+    
+    const ilist = el('div', {id:'installed-list', className:'installed-list'});
+    ilist.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text2)">Click 🔄 Refresh to scan installed apps</div>';
+    c.lastChild.appendChild(ilist);
 }
 
-// --- Tab: Presets (with country grid) ---
+// --- Tab: Presets ---
 const COUNTRY_PRESETS = [
     {iso:'us',name:'🇺🇸 United States',mcc:311,mnc:480,tz:'America/Chicago',detail:'MCC:311 MNC:480'},
     {iso:'gb',name:'🇬🇧 United Kingdom',mcc:234,mnc:30,tz:'Europe/London',detail:'MCC:234 MNC:30'},
@@ -306,21 +501,17 @@ const COUNTRY_PRESETS = [
     {iso:'tr',name:'🇹🇷 Turkey',mcc:286,mnc:1,tz:'Europe/Istanbul',detail:'MCC:286 MNC:1'},
     {iso:'sa',name:'🇸🇦 Saudi Arabia',mcc:420,mnc:1,tz:'Asia/Riyadh',detail:'MCC:420 MNC:1'},
     {iso:'ae',name:'🇦🇪 UAE',mcc:424,mnc:2,tz:'Asia/Dubai',detail:'MCC:424 MNC:2'},
-    {iso:'sg',name:'🇸🇬 Singapore',mcc:525,mnc:1,tz:'Asia/Singapore',detail:'MCC:525 MNC:1'},
+    {iso:'sg',name:'🇼🇬 Singapore',mcc:525,mnc:1,tz:'Asia/Singapore',detail:'MCC:525 MNC:1'},
     {iso:'mx',name:'🇲🇽 Mexico',mcc:334,mnc:20,tz:'America/Mexico_City',detail:'MCC:334 MNC:20'},
 ];
 
 function renderPresets() {
     const c = document.getElementById('content');
     c.innerHTML = '';
-
     const app = ensureApp();
     if (!app) return;
     const currentCountry = app.country || 'us';
-
-    const h2 = el('h2', {}, '🌍 Select Country');
-    c.appendChild(h2);
-
+    c.appendChild(el('h2', {}, '🌍 Select Country'));
     const grid = el('div', {className:'preset-grid'});
     COUNTRY_PRESETS.forEach(cp => {
         const item = el('div', {className:'preset-item' + (cp.iso === currentCountry ? ' selected':'')});
@@ -340,13 +531,11 @@ function renderPresets() {
     c.appendChild(grid);
 }
 
-// --- Tab: Device ---
 function renderDevice() {
     const c = document.getElementById('content');
     const app = ensureApp();
     if (!app) return;
     c.innerHTML = '';
-
     c.appendChild(el('h2', {}, '📱 Device Identity'));
     c.appendChild(fieldRow('Brand', 'brand', 'properties'));
     c.appendChild(fieldRow('Model', 'model', 'properties'));
@@ -363,23 +552,17 @@ function renderDevice() {
     c.appendChild(fieldRow('Build Host', 'buildHost', 'properties'));
     c.appendChild(fieldRow('Build User', 'buildUser', 'properties'));
     c.appendChild(fieldRow('Build Tags', 'buildTags', 'properties'));
-    
     c.appendChild(el('h2', {}, '🖥️ SoC'));
     c.appendChild(fieldRow('SoC Manufacturer', 'socManufacturer', 'properties'));
     c.appendChild(fieldRowWithRandom('SoC Model', 'socModel', 'properties', ()=>'Qualcomm Snapdragon '+(Math.floor(Math.random()*3)+8)+' Gen '+(Math.floor(Math.random()*3)+1)));
-    
-    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
-        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
-    )));
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'}, el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save'))));
 }
 
-// --- Tab: Telephony ---
 function renderTelephony() {
     const c = document.getElementById('content');
     const app = ensureApp();
     if (!app) return;
     c.innerHTML = '';
-
     c.appendChild(el('h2', {}, '📞 SIM / Telephony'));
     c.appendChild(fieldRow('ICC Operator ISO Country', 'iccOperatorIsoCountry', 'telephony'));
     c.appendChild(fieldRow('ICC Operator Numeric', 'iccOperatorNumeric', 'telephony'));
@@ -390,79 +573,56 @@ function renderTelephony() {
     c.appendChild(fieldRow('Carrier Name', 'carrierName', 'telephony'));
     c.appendChild(fieldRow('MCC', 'mcc', 'telephony', 'number'));
     c.appendChild(fieldRow('MNC', 'mnc', 'telephony', 'number'));
-    
-    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
-        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
-    )));
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'}, el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save'))));
 }
 
-// --- Tab: Country ---
 function renderCountry() {
     const c = document.getElementById('content');
     const app = ensureApp();
     if (!app) return;
     c.innerHTML = '';
-
     c.appendChild(el('h2', {}, '🌍 Country / Location'));
     c.appendChild(fieldRow('Country ISO', 'countryIso', 'telephony'));
     c.appendChild(fieldRow('Country Code', 'countryCode', 'telephony'));
     c.appendChild(fieldRow('Default Timezone', 'defaultTimezone', undefined));
     c.appendChild(fieldRow('Latitude', 'latitude', 'location', 'number'));
     c.appendChild(fieldRow('Longitude', 'longitude', 'location', 'number'));
-    
-    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
-        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
-    )));
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'}, el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save'))));
 }
 
-// --- Tab: Network ---
 function renderNetwork() {
     const c = document.getElementById('content');
     const app = ensureApp();
     if (!app) return;
     c.innerHTML = '';
-
     c.appendChild(el('h2', {}, '🌐 Network'));
     c.appendChild(fieldRowWithRandom('IP Address', 'ipAddress', 'network', randIP));
     c.appendChild(fieldRowWithRandom('WiFi SSID', 'wifiSsid', 'network', ()=>'WiFi_' + randHex(6)));
-    
     c.appendChild(el('h2', {}, '🆔 Identifiers'));
     c.appendChild(fieldRowWithRandom('Android ID', 'androidId', 'identifiers', ()=>randHex(16)));
     c.appendChild(fieldRowWithRandom('GSF ID', 'gsfId', 'identifiers', ()=>randHex(16)));
     c.appendChild(fieldRowWithRandom('App Set ID', 'appSetId', 'identifiers', ()=>randHex(8)));
     c.appendChild(fieldRowWithRandom('MediaDrm ID', 'mediaDrmId', 'identifiers', ()=>randHex(32)));
-    
-    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'},
-        el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save')
-    )));
+    c.appendChild(el('div', {className:'row'}, el('div', {className:'col'}, el('button', {className:'btn btn-accent', onclick:()=>{ saveConfig(); }}, '💾 Save'))));
 }
 
-// --- Tab: Advanced ---
 function renderAdvanced() {
     const c = document.getElementById('content');
     const app = ensureApp();
     if (!app) return;
     c.innerHTML = '';
-
     c.appendChild(el('h2', {}, '⚙️ Advanced Settings'));
     c.appendChild(fieldRow('RAM (GB)', 'ramGb', 'display', 'number'));
     c.appendChild(fieldRow('User Agent', 'userAgent', 'display'));
-    
     c.appendChild(el('h2', {}, '📄 Raw Config'));
     const ta = el('textarea', {});
     ta.value = JSON.stringify(currentConfig, null, 2);
     c.appendChild(ta);
-    
     c.appendChild(el('div', {className:'row', style:'margin-top:8px'},
         el('button', {className:'btn btn-accent', onclick:()=>{
-            try {
-                currentConfig = JSON.parse(ta.value);
-                saveConfig();
-            } catch(e) { setStatus('Invalid JSON: '+e.message, false); }
+            try { currentConfig = JSON.parse(ta.value); saveConfig(); } catch(e) { setStatus('Invalid JSON: '+e.message, false); }
         }}, '💾 Save & Apply'),
-        el('button', {className:'btn', onclick:()=>{
-            ta.value = JSON.stringify(currentConfig, null, 2);
-        }}, '↺ Refresh')
+        el('button', {className:'btn', onclick:()=>{ ta.value = JSON.stringify(currentConfig, null, 2); }}, '↺ Refresh')
     ));
 }
 
@@ -488,7 +648,7 @@ function showTab(tab) {
 }
 
 // --- Init ---
-showTab('apps');
+loadConfig().then(() => showTab('apps'));
 </script>
 </body>
 </html>
