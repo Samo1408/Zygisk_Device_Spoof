@@ -1,174 +1,38 @@
-import android.databinding.tool.ext.capitalizeUS
-import org.apache.tools.ant.filters.FixCrLfFilter
-import org.apache.tools.ant.filters.ReplaceTokens
-import java.security.MessageDigest
-
 plugins {
-    alias(libs.plugins.agp.app)
+    id("com.android.library")
 }
-
-val moduleId: String by rootProject.extra
-val moduleName: String by rootProject.extra
-val verCode: Int by rootProject.extra
-val verName: String by rootProject.extra
-val commitHash: String by rootProject.extra
-val abiList: List<String> by rootProject.extra
 
 android {
+    namespace = "com.samo.zygisk_device_spoof"
+    compileSdk = 34
+    ndkVersion = "27.0.12077973"
     defaultConfig {
-        ndk {
-            abiFilters.addAll(abiList)
-        }
+        minSdk = 26
         externalNativeBuild {
-            /*
-            ndkBuild {
-                arguments("MODULE_NAME=$moduleId")
-            }
-            */
             cmake {
-                cppFlags("-std=c++20", "-Wno-deprecated-declarations")
-                arguments(
-                    "-DANDROID_STL=c++_static",
-                    "-DMODULE_NAME=$moduleId"
-                )
+                arguments("-DMODULE_NAME=zygisk_device_spoof")
+                abiFilters("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+                cppFlags("-std=c++20 -fno-exceptions -fno-rtti")
             }
         }
     }
+    externalNativeBuild { cmake { path("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     buildTypes {
-        debug {
-            externalNativeBuild {
-                cmake {
-                    cppFlags("-DDEBUG")
-                }
-            }
-        }
-        release {
-            // No extra flags for release
-        }
-    }
-    externalNativeBuild {
-        /*
-        ndkBuild {
-            path("src/main/cpp/Android.mk")
-        }
-        */
-        cmake {
-            path("src/main/cpp/CMakeLists.txt")
-        }
+        debug { externalNativeBuild { cmake { cppFlags.add("-DDEBUG") } } }
+        release { externalNativeBuild { cmake { cppFlags.add("-O3 -DNDEBUG") } } }
     }
 }
-
-androidComponents.onVariants { variant ->
-    afterEvaluate {
-        val variantLowered = variant.name.lowercase()
-        val variantCapped = variant.name.capitalizeUS()
-        val buildTypeLowered = variant.buildType?.lowercase()
-        val supportedAbis = abiList.joinToString(" ") {
-            when (it) {
-                "arm64-v8a" -> "arm64"
-                "armeabi-v7a" -> "arm"
-                else -> error("unsupported abi $it")
-            }
-        }
-
-        val moduleDir = layout.buildDirectory.file("outputs/module/$variantLowered")
-        val zipFileName =
-            "$moduleName-$verName-$verCode-$commitHash-$buildTypeLowered.zip".replace(' ', '-')
-
-        val prepareModuleFilesTask = tasks.register<Sync>("prepareModuleFiles$variantCapped") {
-            group = "module"
-            dependsOn("assemble$variantCapped")
-            into(moduleDir)
-            from(rootProject.layout.projectDirectory.file("README.md"))
-            from(layout.projectDirectory.file("template")) {
-                exclude("module.prop", "customize.sh", "post-fs-data.sh", "service.sh")
-                filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
-            }
-            from(layout.projectDirectory.file("template")) {
-                include("module.prop")
-                expand(
-                    "moduleId" to moduleId,
-                    "moduleName" to moduleName,
-                    "versionName" to "$verName ($verCode-$commitHash-$variantLowered)",
-                    "versionCode" to verCode
-                )
-            }
-            from(layout.projectDirectory.file("template")) {
-                include("customize.sh", "post-fs-data.sh", "service.sh")
-                val tokens = mapOf(
-                    "DEBUG" to if (buildTypeLowered == "debug") "true" else "false",
-                    "SONAME" to moduleId,
-                    "SUPPORTED_ABIS" to supportedAbis
-                )
-                filter<ReplaceTokens>("tokens" to tokens)
-                filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
-            }
-            from(layout.buildDirectory.file("intermediates/stripped_native_libs/$variantLowered/strip${variantCapped}DebugSymbols/out/lib")) {
-                into("lib")
-            }
-
-            doLast {
-                fileTree(moduleDir).visit {
-                    if (isDirectory) return@visit
-                    val md = MessageDigest.getInstance("SHA-256")
-                    file.forEachBlock(4096) { bytes, size ->
-                        md.update(bytes, 0, size)
-                    }
-                    file(file.path + ".sha256").writeText(
-                        org.apache.commons.codec.binary.Hex.encodeHexString(
-                            md.digest()
-                        )
-                    )
-                }
-            }
-        }
-
-        val zipTask = tasks.register<Zip>("zip$variantCapped") {
-            group = "module"
-            dependsOn(prepareModuleFilesTask)
-            archiveFileName.set(zipFileName)
-            destinationDirectory.set(layout.projectDirectory.file("release").asFile)
-            from(moduleDir)
-        }
-
-        val pushTask = tasks.register<Exec>("push$variantCapped") {
-            group = "module"
-            dependsOn(zipTask)
-            commandLine("adb", "push", zipTask.flatMap { it.archiveFile }, "/data/local/tmp")
-        }
-
-        val installKsuTask = tasks.register<Exec>("installKsu$variantCapped") {
-            group = "module"
-            dependsOn(pushTask)
-            commandLine(
-                "adb", "shell", "su", "-c",
-                "/data/adb/ksud module install /data/local/tmp/$zipFileName"
-            )
-        }
-
-        val installMagiskTask = tasks.register<Exec>("installMagisk$variantCapped") {
-            group = "module"
-            dependsOn(pushTask)
-            commandLine(
-                "adb",
-                "shell",
-                "su",
-                "-M",
-                "-c",
-                "magisk --install-module /data/local/tmp/$zipFileName"
-            )
-        }
-
-        tasks.register<Exec>("installKsuAndReboot$variantCapped") {
-            group = "module"
-            dependsOn(installKsuTask)
-            commandLine("adb", "reboot")
-        }
-
-        tasks.register<Exec>("installMagiskAndReboot$variantCapped") {
-            group = "module"
-            dependsOn(installMagiskTask)
-            commandLine("adb", "reboot")
-        }
-    }
+val zipDebug by tasks.registering(Zip::class) {
+    dependsOn("assembleDebug")
+    archiveFileName.set("zygisk_device_spoof_debug.zip")
+    destinationDirectory.set(file("$projectDir/release"))
+    from("$projectDir/template")
+    from("${layout.buildDirectory}/intermediates/stripped_native_libs/debug/out/lib") { into("zygisk") }
+}
+val zipRelease by tasks.registering(Zip::class) {
+    dependsOn("assembleRelease")
+    archiveFileName.set("zygisk_device_spoof_release.zip")
+    destinationDirectory.set(file("$projectDir/release"))
+    from("$projectDir/template")
+    from("${layout.buildDirectory}/intermediates/stripped_native_libs/release/out/lib") { into("zygisk") }
 }
